@@ -1,21 +1,24 @@
 #include <array>
-#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <string>
 #include <sstream>
 #include <vector>
+#include <numeric>
+#include <boost\random.hpp>
+#include <boost\chrono\chrono.hpp>
+#include <boost\timer\timer.hpp>
 
 
-//for storing test times
-struct Results
+struct Results //for storing test times
 {
 	std::string distribution = "";
 	long long int fastest = 0;
 	long long int slowest = 0;
 	long long int mean = 0;
-	std::string total = "";
+	float total = 0;
+	float cpuTotal = 0;
 
 };
 
@@ -26,14 +29,33 @@ class BaseTest
 public:
 	virtual ~BaseTest() = default;
 	virtual void operator()() = 0;
+	virtual bool operator< (const BaseTest& b);
 	virtual const std::string& getDesc() const = 0;
 	virtual std::string getResults() const = 0;
+	virtual const float& getSimpleTotals() const = 0;
 	
 protected:
-	static int& level; //reference to global command arg settable value
-	static int& iterations; //reference to global command arg settable value
+	std::array<Results, 4> _results;
+	static int& level; //reference to global arg for test level
+	static int& iterations; //reference to global arg for iterations per test
+	static int& clock; //reference to global arg for clock stats to display
 };
 
+bool BaseTest::operator< (const BaseTest& b)
+{
+	float resultA = 0;
+	float resultB = 0;
+	for (int i = 1;i < _results.size();i++)
+	{
+		resultA += _results[i].total;
+		resultB += b._results[i].total;
+	}
+	if (resultA == resultB)
+		return _results[0].total < b._results[0].total;
+	else
+		return resultA < resultB;
+
+}
 
 
 template<typename T = std::minstd_rand>
@@ -47,7 +69,10 @@ public:
 		_results[0].distribution = "none";
 		_results[1].distribution = "Uniform Integer";
 		_results[2].distribution = "Normal";
-		_results[3].distribution = "Bernoulli";}
+		_results[3].distribution = "Bernoulli";
+		_timer.stop();
+		_totalTimer.stop();
+		}
 	~EngineTest() {}
 	
 	virtual void operator()() override { this->runTest(); }
@@ -57,20 +82,24 @@ public:
 	//format _results and return
 	virtual std::string getResults() const override;
 
+	//return level 0 Totals from _results for faster comparison when sorting
+	virtual const float& getSimpleTotals() const override;
+
 	//format settings and return
 	static std::string getSettings();
 
 private:
 	void runTest();
 
-	//formats accumulated time into _results[].total as mm:ss.msec
-	void convertResultsTotal(int resultsIndex);
-	//creates proper mean
+	//conver _totalTimer values and push to _results array struct
+	void convertTotalTimer(int resultsIndex);
+	//creates mean from total
 	void convertResultsMean(int resultsIndex);
 
-	static std::chrono::steady_clock _steadyClock;
-	std::chrono::steady_clock::time_point _start;
-	std::chrono::steady_clock::time_point _stop;
+
+	boost::timer::cpu_timer _timer;	//single call timer
+	boost::timer::cpu_timer _totalTimer; //loop timer
+
 
 	T _eng;
 	std::uniform_int_distribution<int> _dist1;
@@ -78,81 +107,221 @@ private:
 	std::bernoulli_distribution _dist3;
 
 	std::string _desc;
-	std::array<Results, 4> _results;
+
 
 };
 
 template<typename T>
+const float& EngineTest<T>::getSimpleTotals() const
+{
+	return _results[0].total;
+}
+
+
+template<typename T>
+std::string EngineTest<T>::getResults() const
+{
+
+	std::stringstream stream;
+	stream << std::setfill('-') << std::setw(52) << "" << '\n'
+		<< std::setfill(' ') << std::setw((52 - (_desc.size() + 8)) / 2) << "" << "Engine: " << _desc << std::setw((52 - (_desc.size() + 8)) / 2) << "" << '\n'
+		<< std::setfill('-') << std::setw(52) << "" << "\n\n";
+	std::streamsize original = std::cout.precision();
+	switch (level)
+	{
+	case 1:
+		if (clock == 1)
+		{
+			stream << " Fastest:\t\t" << std::setfill(' ') << std::setw(std::numeric_limits<long long int>::digits10) << _results[0].fastest << " ns\n"
+				<< " Slowest:\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[0].slowest << " ns\n"
+				<< " Mean:\t\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[0].mean << " ns\n\n"
+				<< " Total:\t\t\t\t\t" << std::left << std::setfill('0') << std::fixed << std::setprecision(7) << std::setw(9) << _results[0].total << std::setprecision(original) <<  std::right << " s\n";
+			break;
+		}
+		else if (clock == 2)
+		{
+			
+			
+			float percentage = (_results[0].cpuTotal / _results[0].total) * 100.0f;
+
+			stream << " Real Time:\t\t\t\t" << std::left << std::setfill('0') << std::fixed << std::setprecision(7) << std::setw(9) << _results[0].total << " s\n"
+				<< " CPU " << std::right << std::setfill(' ') << std::setw(7) << std::setprecision(2) << percentage << std::setprecision(original) << "%:\t\t\t\t" << std::left << std::setfill('0') << std::setprecision(7) << std::setw(9) << _results[0].cpuTotal << std::setprecision(original) << " s\n";
+			break;
+		}
+
+	case 2:
+		//fall through to case 3
+
+	case 3:
+		if (clock == 1)
+		{
+			for (int x = 1; x < 4; x++)
+			{
+				stream << std::setfill('-') << _results[x].distribution << std::setw(52 - _results[x].distribution.size()) << "" << "\n\n"
+					<< " Fastest:\t\t" << std::setfill(' ') << std::setw(std::numeric_limits<long long int>::digits10) << _results[x].fastest << " ns\n"
+					<< " Slowest:\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[x].slowest << " ns\n"
+					<< " Mean:\t\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[x].mean << " ns\n\n"
+					<< " Total:\t\t\t\t\t" << std::left << std::setfill('0') << std::fixed << std::setprecision(7) << std::setw(9) << _results[x].total << std::setprecision(original) << std::right << " s\n\n";
+			}
+			break;
+		}
+		else if (clock == 2)
+		{
+			
+			for (int x = 1; x < 4; x++)
+			{
+				float percentage = (_results[x].cpuTotal / _results[x].total) * 100.0f;
+
+				stream << std::setfill('-') << _results[x].distribution << std::setw(52 - _results[x].distribution.size()) << "" << "\n\n"
+					<< " Real Time:\t\t\t\t" << std::left << std::setfill('0') << std::fixed << std::setprecision(7) << std::setw(9) << _results[x].total << " s\n"
+					<< " CPU " << std::right << std::setfill(' ') << std::setw(7) << std::setprecision(2) << percentage << std::setprecision(original) << "%:\t\t\t\t" << std::left << std::setfill('0') << std::setprecision(7) << std::setw(9) << _results[x].cpuTotal << std::setprecision(original) << " s\n\n";
+			}
+			break;
+		}
+
+	}
+	return stream.str();
+
+}
+
+template<typename T>
+std::string EngineTest<T>::getSettings()
+{
+	std::stringstream stream;
+	stream << std::setfill('-') << std::setw(52) << "" << '\n'
+		<< "\nIterations:  " << iterations << '\n'
+		<< "Assigned to Vector:  ";
+	if (level == 3)
+		stream << "yes";
+	else
+		stream << "no";
+	stream << '\n';
+	return stream.str();
+
+}
+
+
+template<typename T>
 void EngineTest<T>::runTest() 
 {
+	
 	bool initialized = false;
 	switch (level)
 	{
 	case 1:
 		std::cout << ">Starting test for: " << _desc << "...";
-		for (int i = 0; i < iterations; i++) {
-			
-			_start = _steadyClock.now();
-			_eng();
-			_stop = _steadyClock.now();
-			long long int thisIt = std::chrono::duration_cast<std::chrono::nanoseconds>(_stop - _start).count();
-			if (!initialized)
-			{
-				_results[0].fastest = thisIt;
-				initialized = true;
+		
+		if(clock == 1)
+		{ //clock variant 1
+			for (int i = 0; i < iterations; i++)
+			{ //run test
+				_timer.elapsed().clear();
+				_timer.start();
+				_eng();
+				_timer.stop();
+				long long int thisIt = _timer.elapsed().wall;
+				if (!initialized)
+				{
+					_results[0].fastest = thisIt;
+					initialized = true;
+				}
+				//keep track of fastest and slowest
+				if (_results[0].fastest > thisIt)
+				   	_results[0].fastest = thisIt;
+				if (_results[0].slowest < thisIt)
+					_results[0].slowest = thisIt;
+				_results[0].total += thisIt / 1000000000.0; //keep accumulating total time
 			}
-			//keep track of fastest and slowest
-			if (_results[0].fastest > thisIt)
-				_results[0].fastest = thisIt;
-			if (_results[0].slowest < thisIt)
-				_results[0].slowest = thisIt;
-			_results[0].mean += thisIt; //keep accumulating total time inside mean
-			
+			convertResultsMean(0); //convert total to mean
 		}
-
-		convertResultsTotal(0); //pass control to convert time accumulated in mean
-		convertResultsMean(0); //convert mean to proper mean
+		else if (clock == 2)
+		{ //clock variant 2
+			_totalTimer.elapsed().clear();
+			_totalTimer.start();
+			for (int i = 0; i < iterations; i++)
+				_eng();
+			_totalTimer.stop();
+			convertTotalTimer(0); //convert timer and push to _results array struct
+		}	
+		
 		std::cout << "done!\n";
 
 		break;
 	case 2:
 		std::cout << ">Starting test for: " << _desc << '\n';
-		for (int x = 1; x < 4; x++) { //for each distribution starting at _results[1] to _results[4] as x
+		for (int x = 1; x < 4; x++)
+		{ //for each distribution starting at _results[1] to _results[4] as x
 			std::cout << ">" << x << "/3...";
-			for (int i = 0; i < iterations; i++) { //run test for x
-				
-				switch (x) {
+			if (clock == 1)
+			{ //clock variant 1
+				for (int i = 0; i < iterations; i++)
+				{ //run test for x
+
+					switch (x) {
+					case 1:
+						_timer.elapsed().clear();
+						_timer.start();
+						_dist1(_eng);
+						_timer.stop();
+						break;
+					case 2:
+						_timer.elapsed().clear();
+						_timer.start();
+						_dist2(_eng);
+						_timer.stop();
+						break;
+					case 3:
+						_timer.elapsed().clear();
+						_timer.start();
+						_dist3(_eng);
+						_timer.stop();
+						break;
+					}
+					long long int thisIt = _timer.elapsed().wall;
+					if (!initialized)
+					{
+						_results[x].fastest = thisIt;
+						initialized = true;
+					}
+					if (_results[x].fastest > thisIt)
+						_results[x].fastest = thisIt;
+					if (_results[x].slowest < thisIt)
+						_results[x].slowest = thisIt;
+					_results[x].total += thisIt / 1000000000.0;
+
+				}
+				convertResultsMean(x);
+			}
+			else if (clock == 2)
+			{ // clock variant 2
+				switch (x) {  //run test for x
 				case 1:
-					_start = _steadyClock.now();
-					_dist1(_eng);
-					_stop = _steadyClock.now();
+					_totalTimer.elapsed().clear();
+					_totalTimer.start();
+					for (int i = 0; i < iterations; i++)
+						_dist1(_eng);
+					_totalTimer.stop();
+					convertTotalTimer(x);
 					break;
 				case 2:
-					_start = _steadyClock.now();
-					_dist2(_eng);
-					_stop = _steadyClock.now();
+					_totalTimer.elapsed().clear();
+					_totalTimer.start();
+					for (int i = 0; i < iterations; i++)
+						_dist2(_eng);
+					_totalTimer.stop();
+					convertTotalTimer(x);
 					break;
 				case 3:
-					_start = _steadyClock.now();
-					_dist3(_eng);
-					_stop = _steadyClock.now();
+					_totalTimer.elapsed().clear();
+					_totalTimer.start();
+					for (int i = 0; i < iterations; i++)
+						_dist3(_eng);
+					_totalTimer.stop();
+					convertTotalTimer(x);
 					break;
 				}
-				long long int thisIt = std::chrono::duration_cast<std::chrono::nanoseconds>(_stop - _start).count();
-				if (!initialized)
-				{
-					_results[x].fastest = thisIt;
-					initialized = true;
-				}
-				if (_results[x].fastest > thisIt)
-					_results[x].fastest = thisIt;
-				if (_results[x].slowest < thisIt)
-					_results[x].slowest = thisIt;
-				_results[x].mean += thisIt;
 
 			}
-			convertResultsTotal(x);
-			convertResultsMean(x);
 			std::cout << "done!\n";
 		}
 
@@ -171,122 +340,97 @@ void EngineTest<T>::runTest()
 			std::vector<bool> boolVec;
 			if(x==3)
 				boolVec.resize(iterations);
-			for (int i = 0; i < iterations; i++) { //run test for x
+			if (clock == 1)
+			{ //clock variant 1
+				for (int i = 0; i < iterations; i++)
+				{ //run test for x
 
-				switch (x) {
+					switch (x) {
+					case 1:
+						_timer.elapsed().clear();
+						_timer.start();
+						intVec[i] = _dist1(_eng);
+						_timer.stop();
+						break;
+					case 2:
+						_timer.elapsed().clear();
+						_timer.start();
+						floatVec[i] = _dist2(_eng);
+						_timer.stop();
+						break;
+					case 3:
+						_timer.elapsed().clear();
+						_timer.start();
+						boolVec[i] = _dist3(_eng);
+						_timer.stop();
+						break;
+					}
+					long long int thisIt = _timer.elapsed().wall;
+					if (!initialized)
+					{
+						_results[x].fastest = thisIt;
+						initialized = true;
+					}
+					if (_results[x].fastest > thisIt)
+						_results[x].fastest = thisIt;
+					if (_results[x].slowest < thisIt)
+						_results[x].slowest = thisIt;
+					_results[x].total += thisIt / 1000000000.0;
+
+				}
+				convertResultsMean(x);
+			}
+
+			else if (clock == 2)
+			{ //clock variant 2
+				switch (x) {  //run test for x
 				case 1:
-					_start = _steadyClock.now();
-					intVec[i] = _dist1(_eng);
-					_stop = _steadyClock.now();
+					_totalTimer.elapsed().clear();
+					_totalTimer.start();
+					for (int i = 0; i < iterations; i++)
+						intVec[i] = _dist1(_eng);
+					_totalTimer.stop();
+					convertTotalTimer(x);
 					break;
 				case 2:
-					_start = _steadyClock.now();
-					floatVec[i] = _dist2(_eng);
-					_stop = _steadyClock.now();
+					_totalTimer.elapsed().clear();
+					_totalTimer.start();
+					for (int i = 0; i < iterations; i++)
+						floatVec[i] = _dist2(_eng);
+					_totalTimer.stop();
+					convertTotalTimer(x);
 					break;
 				case 3:
-					_start = _steadyClock.now();
-					boolVec[i] = _dist3(_eng);
-					_stop = _steadyClock.now();
+					_totalTimer.elapsed().clear();
+					_totalTimer.start();
+					for (int i = 0; i < iterations; i++)
+						boolVec[i] = _dist3(_eng);
+					_totalTimer.stop();
+					convertTotalTimer(x);
 					break;
 				}
-				long long int thisIt = std::chrono::duration_cast<std::chrono::nanoseconds>(_stop - _start).count();
-				if (!initialized)
-				{
-					_results[x].fastest = thisIt;
-					initialized = true;
-				}
-				if (_results[x].fastest > thisIt)
-					_results[x].fastest = thisIt;
-				if (_results[x].slowest < thisIt)
-					_results[x].slowest = thisIt;
-				_results[x].mean += thisIt;
 
 			}
-			convertResultsTotal(x);
-			convertResultsMean(x);
+
 			std::cout << "done!\n";
 		}		
 		break;
 	}
 }
 
-
 template<typename T>
-void EngineTest<T>::convertResultsTotal(int resultsIndex)
+void EngineTest<T>::convertTotalTimer(int resultsIndex)
 {
-	std::chrono::milliseconds steady_result(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::nanoseconds (_results[resultsIndex].mean)));
+	_results[resultsIndex].total = _totalTimer.elapsed().wall / 1000000000.0;
+	float tempUser = _totalTimer.elapsed().user / 1000000000.0;
+	float tempSystem = _totalTimer.elapsed().system / 1000000000.0;
+	_results[resultsIndex].cpuTotal = tempUser + tempSystem;
 
-	std::chrono::minutes mm = std::chrono::duration_cast<std::chrono::minutes>(steady_result % std::chrono::hours(1));
-	std::chrono::seconds ss = std::chrono::duration_cast<std::chrono::seconds>(steady_result % std::chrono::minutes(1));
-	std::chrono::milliseconds msec = std::chrono::duration_cast<std::chrono::milliseconds>(steady_result % std::chrono::seconds(1));
-
-	std::stringstream stream;
-	stream << std::setfill('0')
-		<< std::setw(2) << mm.count() << ":"
-		<< std::setw(2) << ss.count() << "."
-		<< std::setw(3) << msec.count();
-
-	this->_results[resultsIndex].total = stream.str();
-	
 }
 
 template<typename T>
 void EngineTest<T>::convertResultsMean(int resultsIndex)
 {
-
-	this->_results[resultsIndex].mean /= iterations;
-
-}
-
-template<typename T>
-std::string EngineTest<T>::getResults() const
-{
-
-	std::stringstream stream;
-	stream << std::setfill('-') << std::setw(50) << "" << '\n'
-		<< std::setfill(' ') << std::setw((50-(_desc.size()+8))/2) << "" << "Engine: " << _desc << std::setw((50-(_desc.size()+8))/2) << "" << '\n'
-		<< std::setfill('-') << std::setw(50) << "" << "\n\n";
-	
-	switch (level)
-	{
-	case 1:
-		stream << " Fastest:\t\t" << std::setfill(' ') << std::setw(std::numeric_limits<long long int>::digits10) << _results[0].fastest << " ns\n"
-			<< " Slowest:\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[0].slowest << " ns\n"
-			<< " Mean:\t\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[0].mean << " ns\n\n"
-			<< " Total (min:sec:msec):\t\t\t" << _results[0].total << '\n';
-
-		break;
-	case 2:
-		//fall through to case 3
-
-	case 3:
-		for (int x = 1; x < 4; x++) {
-			stream << std::setfill('-') << _results[x].distribution << std::setw(50 - _results[x].distribution.size()) << "" << "\n\n"
-				<< " Fastest:\t\t" << std::setfill(' ') << std::setw(std::numeric_limits<long long int>::digits10) << _results[x].fastest << " ns\n"
-				<< " Slowest:\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[x].slowest << " ns\n"
-				<< " Mean:\t\t\t" << std::setw(std::numeric_limits<long long int>::digits10) << _results[x].mean << " ns\n\n"
-				<< " Total (min:sec:msec):\t\t\t" << _results[x].total << "\n\n";
-		}
-
-		break;
-	}	
-	return stream.str();
-
-}
-
-template<typename T>
-std::string EngineTest<T>::getSettings()
-{
-	std::stringstream stream;
-	stream << std::setfill('-') << std::setw(50) << "" << '\n'
-		<< "\nIterations:  " << iterations << '\n'
-		<< "Assigned to Vector:  ";
-	if (level == 3)
-		stream << "yes";
-	else
-		stream << "no";
-	stream << '\n';
-	return stream.str();
+	this->_results[resultsIndex].mean = _results[resultsIndex].total * 1000000000.0 / iterations;
 
 }
