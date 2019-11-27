@@ -1,6 +1,9 @@
 # c1000-random-comparison
 A small benchmark command line tool for comparing std and boost random engines. Motivation and process can be found at the bottom of [this article](http://www.lavaxp.net/cpp-standard-library-in-game-dev-2-2-std-random-2/).
 
+![c1000](https://user-images.githubusercontent.com/27367475/69744801-bcdf3c80-10f5-11ea-8996-f969bf9e0ed2.png)
+
+
 ## Installation
 
 If you're using Visual Studio 2015, the needed boost source and libs are included, if you want to compile your own libs:
